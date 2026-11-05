@@ -1,0 +1,14 @@
+---
+app_name: example
+app_user: deploy                 # owner of the files; the user your service runs as
+base_dir: /srv/example
+artifact: ./dist/example.tar.gz  # built by your CI or on your laptop; override with -e artifact=...
+keep_releases: 5
+
+shared_files: [".env"]           # create /srv/example/shared/.env once, by hand or from a vault
+shared_dirs: ["storage"]
+
+release_commands: []             # e.g. ["npm ci --omit=dev"] if the artifact has no node_modules
+
+restart_command: "systemctl reload example"
+health_url: "http://127.0.0.1:8080/health"

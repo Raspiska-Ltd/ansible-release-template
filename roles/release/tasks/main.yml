@@ -1,0 +1,157 @@
+---
+# Deploy: unpack the artifact into releases/<N>, wire up shared files, switch `current`, check health,
+# roll back on failure, prune old releases.
+#
+#   <base_dir>/releases/1, 2, 3 ...   one folder per deploy
+#   <base_dir>/shared/                things that survive deploys (.env, uploads ...)
+#   <base_dir>/current -> releases/3  what the web server / service points at
+
+- name: Create the layout
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user | default(omit) }}"
+    mode: "0755"
+  loop:
+    - "{{ base_dir }}/releases"
+    - "{{ base_dir }}/shared"
+
+- name: List the existing releases
+  ansible.builtin.find:
+    paths: "{{ base_dir }}/releases"
+    file_type: directory
+    patterns: '^[0-9]+$'
+    use_regex: true
+  register: existing
+
+- name: Pick the next release number (1, 2, 3 ...)
+  ansible.builtin.set_fact:
+    release: "{{ ((existing.files | map(attribute='path') | map('basename') | map('int') | list) + [0]) | max + 1 }}"
+
+- name: Remember what is live right now
+  ansible.builtin.stat:
+    path: "{{ base_dir }}/current"
+  register: live
+
+- name: Set the paths
+  ansible.builtin.set_fact:
+    release_dir: "{{ base_dir }}/releases/{{ release }}"
+    previous: "{{ live.stat.lnk_source | default('') }}"
+
+- name: Check that the shared files exist (create them once on the server)
+  ansible.builtin.stat:
+    path: "{{ base_dir }}/shared/{{ item }}"
+  loop: "{{ shared_files }}"
+  register: shared_check
+
+- name: Stop if a shared file is missing
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "{{ base_dir }}/shared/{{ item.item }} does not exist yet. Create it once, then deploy again."
+  loop: "{{ shared_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create the release folder
+  ansible.builtin.file:
+    path: "{{ release_dir }}"
+    state: directory
+    owner: "{{ app_user | default(omit) }}"
+    mode: "0755"
+
+- name: Unpack the artifact
+  ansible.builtin.unarchive:
+    src: "{{ artifact }}"
+    dest: "{{ release_dir }}"
+    owner: "{{ app_user | default(omit) }}"
+
+- name: Link the shared files
+  ansible.builtin.file:
+    src: "{{ base_dir }}/shared/{{ item }}"
+    dest: "{{ release_dir }}/{{ item }}"
+    state: link
+    force: true
+    owner: "{{ app_user | default(omit) }}"
+  loop: "{{ shared_files }}"
+
+- name: Create the shared folders on first use
+  ansible.builtin.file:
+    path: "{{ base_dir }}/shared/{{ item }}"
+    state: directory
+    owner: "{{ app_user | default(omit) }}"
+    mode: "0755"
+  loop: "{{ shared_dirs }}"
+
+- name: Link the shared folders
+  ansible.builtin.file:
+    src: "{{ base_dir }}/shared/{{ item }}"
+    dest: "{{ release_dir }}/{{ item }}"
+    state: link
+    force: true
+    owner: "{{ app_user | default(omit) }}"
+  loop: "{{ shared_dirs }}"
+
+- name: Run the release commands (build, install, warm caches ...)
+  ansible.builtin.shell:
+    cmd: "{{ item }}"
+    chdir: "{{ release_dir }}"
+  become_user: "{{ app_user | default(omit) }}"
+  loop: "{{ release_commands }}"
+  changed_when: true
+
+- name: Go live, and undo it if the health check fails
+  block:
+    # The file module replaces a symlink by renaming a temporary one over it,
+    # so the switch is atomic: requests see the old release or the new one, never a half state.
+    - name: Switch current to the new release
+      ansible.builtin.file:
+        src: "{{ release_dir }}"
+        dest: "{{ base_dir }}/current"
+        state: link
+        force: true
+        owner: "{{ app_user | default(omit) }}"
+
+    - name: Restart and check
+      ansible.builtin.include_tasks: restart_and_check.yml
+
+  rescue:
+    - name: Point current back at the previous release
+      ansible.builtin.file:
+        src: "{{ previous }}"
+        dest: "{{ base_dir }}/current"
+        state: link
+        force: true
+        owner: "{{ app_user | default(omit) }}"
+      when: previous | length > 0
+
+    - name: Restart on the previous release
+      ansible.builtin.shell: "{{ restart_command }}"
+      changed_when: true
+      when: previous | length > 0 and restart_command | length > 0
+
+    - name: Stop here
+      ansible.builtin.fail:
+        msg: >-
+          Release {{ release }} failed ({{ ansible_failed_result.msg | default('see the output above') }}).
+          {{ 'Rolled back to ' ~ (previous | basename) ~ '.' if previous | length > 0 else 'There was no previous release to go back to.' }}
+          The failed release stays in {{ release_dir }} for debugging.
+
+- name: List the releases again
+  ansible.builtin.find:
+    paths: "{{ base_dir }}/releases"
+    file_type: directory
+    patterns: '^[0-9]+$'
+    use_regex: true
+  register: after
+
+- name: Work out which releases are too old
+  ansible.builtin.set_fact:
+    too_old: >-
+      {{ (after.files | map(attribute='path') | map('basename') | map('int') | sort)[:-(keep_releases | int)]
+         | reject('equalto', release | int) | list }}
+
+- name: Remove the old releases
+  ansible.builtin.file:
+    path: "{{ base_dir }}/releases/{{ item }}"
+    state: absent
+  loop: "{{ too_old }}"

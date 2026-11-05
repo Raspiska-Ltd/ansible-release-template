@@ -1,0 +1,12 @@
+---
+# ansible-playbook deploy.yml -e app=example -e artifact=./dist/example.tar.gz
+# One host at a time by default (-e serial=2 for two at a time, --limit web1 for a canary).
+- name: Deploy {{ app | default('example') }}
+  hosts: web
+  serial: "{{ serial | default(1) }}"
+  become: "{{ deploy_become | default(true) }}"
+  gather_facts: false
+  vars_files:
+    - "vars/{{ app | default('example') }}.yml"
+  roles:
+    - release

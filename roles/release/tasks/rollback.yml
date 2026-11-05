@@ -1,0 +1,46 @@
+---
+# Rollback: point `current` at the previous release (or at `-e to=<N>`), restart, check health.
+# The release folders are still on disk, so this takes seconds and needs no build.
+- name: List the releases
+  ansible.builtin.find:
+    paths: "{{ base_dir }}/releases"
+    file_type: directory
+    patterns: '^[0-9]+$'
+    use_regex: true
+  register: all
+
+- name: Find what is live
+  ansible.builtin.stat:
+    path: "{{ base_dir }}/current"
+  register: live
+
+- name: Pick the target release
+  ansible.builtin.set_fact:
+    numbers: "{{ all.files | map(attribute='path') | map('basename') | map('int') | sort | list }}"
+    live_n: "{{ (live.stat.lnk_source | default('0') | basename) | int }}"
+
+- name: Choose the release to go back to
+  ansible.builtin.set_fact:
+    target: "{{ (to | default('') | string) if (to | default('') | string) | length > 0 else ((numbers | select('lt', live_n | int) | list) | last | default('')) }}"
+
+- name: Stop if there is nothing to go back to
+  ansible.builtin.assert:
+    that:
+      - target | string | length > 0
+      - (target | int) in numbers
+    fail_msg: "Nothing to roll back to. Releases on this host: {{ numbers }}, live: {{ live_n }}."
+
+- name: Switch current
+  ansible.builtin.file:
+    src: "{{ base_dir }}/releases/{{ target }}"
+    dest: "{{ base_dir }}/current"
+    state: link
+    force: true
+    owner: "{{ app_user | default(omit) }}"
+
+- name: Restart and check
+  ansible.builtin.include_tasks: restart_and_check.yml
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: rolled back from release {{ live_n }} to {{ target }}"

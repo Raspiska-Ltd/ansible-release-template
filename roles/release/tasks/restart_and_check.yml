@@ -1,0 +1,16 @@
+---
+# Shared by deploy and rollback: restart whatever serves `current`, then wait for the health URL.
+- name: Restart the service
+  ansible.builtin.shell: "{{ restart_command }}"
+  changed_when: true
+  when: restart_command | length > 0
+
+- name: Wait for the health check
+  ansible.builtin.uri:
+    url: "{{ health_url }}"
+    status_code: 200
+  register: health
+  retries: "{{ health_retries }}"
+  delay: "{{ health_delay }}"
+  until: health.status == 200
+  when: health_url | length > 0

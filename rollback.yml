@@ -1,0 +1,14 @@
+---
+# ansible-playbook rollback.yml -e app=example              previous release
+# ansible-playbook rollback.yml -e app=example -e to=12     a specific release
+- name: Roll back {{ app | default('example') }}
+  hosts: web
+  serial: "{{ serial | default(1) }}"
+  become: "{{ deploy_become | default(true) }}"
+  gather_facts: false
+  vars_files:
+    - "vars/{{ app | default('example') }}.yml"
+  tasks:
+    - ansible.builtin.include_role:
+        name: release
+        tasks_from: rollback.yml

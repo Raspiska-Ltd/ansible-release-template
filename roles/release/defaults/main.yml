@@ -1,0 +1,10 @@
+---
+# Everything here can be overridden in vars/<app>.yml or with -e.
+keep_releases: 5      # release folders to keep (the live one is never removed)
+shared_files: []      # files that live in shared/ and are linked into every release, e.g. [".env"]
+shared_dirs: []       # folders that live in shared/ and are linked into every release, e.g. ["storage", "uploads"]
+release_commands: []  # shell commands run inside the new release, before it goes live (npm ci, composer install ...)
+restart_command: ""   # run after every switch, e.g. "systemctl reload myapp" or "pm2 reload myapp"
+health_url: ""        # checked after the switch; empty = no health check
+health_retries: 10
+health_delay: 3       # seconds between tries
